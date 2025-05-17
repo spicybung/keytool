@@ -1,4 +1,4 @@
-# Glitch, importing tool!
+# Glitch - I/O tool!
 An I/O for EA Canada(now EA Vancouver)'s ReBoot game PlayStation 1 game.
 
 # Features
