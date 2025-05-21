@@ -16,7 +16,7 @@ class ImportTOMHeader(Operator, ImportHelper):
 
     end_offset: IntProperty(
         name="End Offset",
-        description="Manual end offset for vertex/index data block",
+        description="Manual end offset for CLUT data block",
         default=0x1000,
         min=0
     )
@@ -32,27 +32,27 @@ class ImportTOMHeader(Operator, ImportHelper):
         fields = struct.unpack("<IIIIIIII", data[:32])
 
         header = {
-            "material_list_offset":  fields[0],
-            "num_materials":         fields[1],
-            "unknown_offset_1":      fields[2],
-            "unknown_offset_2":      fields[3],
-            "geometry_data_offset":  fields[4],
-            "unknown_offset_3":      fields[5],
-            "bone_data_offset":      fields[6],
-            "bone_count":            fields[7],
+            "material_list_offset":  fields[0],     # Material list
+            "num_materials":         fields[1],     # Number of materials
+            "unknown_offset_0":      fields[2],     # Unk 1
+            "unknown_offset_1":      fields[3],     # Unk 2
+            "CLUT_offset":           fields[4],     # Color Look-Up Table?
+            "unknown_offset_2":      fields[5],     # Unk 3
+            "bone_data_offset":      fields[6],     # Bone data
+            "bone_count":            fields[7],     # Bone count?
         }
 
-        geo_start = header["geometry_data_offset"]
-        geo_end = self.end_offset
+        clut_start = header["CLUT_offset"]
+        clut_end = self.end_offset
 
         print("== .TOM Header ==")
         for k, v in header.items():
             print(f"{k:<24}: 0x{v:08X} ({v})")
 
-        print("\n== Geometry Block ==")
-        print(f"Start Offset        : 0x{geo_start:08X}")
-        print(f"User End Offset     : 0x{geo_end:08X} ({geo_end})")
-        print(f"Block Size          : {geo_end - geo_start} bytes")
+        print("\n== CLUT Index Block ==")
+        print(f"Start Offset        : 0x{clut_start:08X}")
+        print(f"User End Offset     : 0x{clut_end:08X} ({clut_end})")
+        print(f"Block Size          : {clut_end - clut_start} bytes")
 
         return {'FINISHED'}
 
