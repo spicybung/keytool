@@ -6,5 +6,5 @@ Currently, keytool only allows for input of .TOM (Texel Object Map) models from 
 
 # Stay frosty
 Acknowledgements:
-Galvin Blair, Ian Pearson, Phil Mitchell, and John Grace for the creation of ReBoot
-Insipriation thanks to fans of ReBoot who keep the community still alive.
++ Galvin Blair, Ian Pearson, Phil Mitchell, and John Grace for their involvement in the creation of ReBoot
++ Fans of ReBoot who keep the community alive to this day
