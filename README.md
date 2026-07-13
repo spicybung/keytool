@@ -2,7 +2,7 @@
 A work-in-progress I/O script for EA Canada(now EA Vancouver)'s ReBoot game PlayStation 1 game using reverse engineering.
 
 # Features
-Currently, keytool only allows for input of .TOM (Texel Object Map) models from ReBoot the PS1 game(and the only ReBoot video game to exist).
+Currently, keytool only allows for input of .TOM (Texel Object Map) models from the PS1 game(and only ReBoot video game to exist) ReBoot: Countdown to Chaos.
 
 # Stay frosty
 Acknowledgements:
