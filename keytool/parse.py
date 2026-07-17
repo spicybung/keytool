@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Keytool",
     "author": "spicybung",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (3, 4, 0),
     "location": "File > Import > ReBoot PS1 Texel Object (.TOM)",
-    "description": "Imports ReBoot PlayStation 1 TOM models and preserves reverse-engineering metadata",
+    "description": "Imports segmented ReBoot PlayStation 1 TOM models",
     "category": "Import-Export",
 }
 
@@ -1056,13 +1056,239 @@ def build_translation_world_positions(
     ]
 
 
+def normalize_vector(
+    vector: Sequence[float],
+    fallback: Sequence[float],
+) -> Tuple[float, float, float]:
+    length = math.sqrt(sum(component * component for component in vector))
+
+    if length <= 0.000001:
+        vector = fallback
+        length = math.sqrt(sum(component * component for component in vector))
+
+    return tuple(component / length for component in vector)
+
+
+def cross_product(
+    left: Sequence[float],
+    right: Sequence[float],
+) -> Tuple[float, float, float]:
+    return (
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    )
+
+
+def dot_product(
+    left: Sequence[float],
+    right: Sequence[float],
+) -> float:
+    return sum(a * b for a, b in zip(left, right))
+
+
+def make_basis_from_x_axis(
+    x_axis: Sequence[float],
+    up_hint: Sequence[float],
+) -> Tuple[Tuple[float, float, float], ...]:
+    x_axis = normalize_vector(x_axis, (1.0, 0.0, 0.0))
+    up_axis = normalize_vector(up_hint, (0.0, 0.0, 1.0))
+
+    if abs(dot_product(x_axis, up_axis)) > 0.92:
+        up_axis = (0.0, 1.0, 0.0)
+
+    z_axis = normalize_vector(
+        cross_product(x_axis, up_axis),
+        (0.0, 1.0, 0.0),
+    )
+    y_axis = normalize_vector(
+        cross_product(z_axis, x_axis),
+        (0.0, 0.0, 1.0),
+    )
+
+    return (x_axis, y_axis, z_axis)
+
+
+def transform_by_basis(
+    basis: Sequence[Sequence[float]],
+    vector: Sequence[float],
+) -> Tuple[float, float, float]:
+    return (
+        basis[0][0] * vector[0]
+        + basis[1][0] * vector[1]
+        + basis[2][0] * vector[2],
+        basis[0][1] * vector[0]
+        + basis[1][1] * vector[1]
+        + basis[2][1] * vector[2],
+        basis[0][2] * vector[0]
+        + basis[1][2] * vector[1]
+        + basis[2][2] * vector[2],
+    )
+
+
+def bind_axis_for_bone_name(
+    name: str,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    lower_name = name.lower()
+
+    if "uleg" in lower_name or "lleg" in lower_name:
+        return (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)
+
+    if "foot" in lower_name:
+        return (0.0, -1.0, 0.0), (0.0, 0.0, 1.0)
+
+    if "pelvis" in lower_name:
+        return (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)
+
+    vertical_names = ("torso", "neck", "head", "ctr", "point")
+
+    if any(token in lower_name for token in vertical_names):
+        return (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)
+
+    arm_names = ("clav", "uarm", "larm", "hand", "fing")
+
+    if any(token in lower_name for token in arm_names):
+        if lower_name.startswith("l_"):
+            return (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
+
+        return (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
+
+    return (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)
+
+
+def build_humanoid_bind_pose(
+    bones: Sequence[TOMBone],
+) -> Tuple[
+    List[Tuple[float, float, float]],
+    List[Tuple[Tuple[float, float, float], ...]],
+]:
+    bases = [
+        make_basis_from_x_axis(*bind_axis_for_bone_name(bone.name))
+        for bone in bones
+    ]
+    origins: List[Optional[Tuple[float, float, float]]] = [None] * len(bones)
+
+    def resolve_origin(
+        bone_index: int,
+        active: set[int],
+    ) -> Tuple[float, float, float]:
+        existing = origins[bone_index]
+
+        if existing is not None:
+            return existing
+
+        if bone_index in active:
+            raise TOMParseError(
+                f"Bone parent cycle involving bone {bone_index}."
+            )
+
+        active.add(bone_index)
+        bone = bones[bone_index]
+
+        if bone.parent_index < 0:
+            origin = (0.0, 0.0, 0.0)
+        elif "pelvis" in bone.name.lower():
+            parent_origin = resolve_origin(bone.parent_index, active)
+            lateral_distance = max(
+                abs(float(bone.local_position[1])),
+                abs(float(bone.local_position[2])),
+                1.0,
+            )
+            lower_name = bone.name.lower()
+
+            if lower_name.startswith("l_"):
+                lateral_sign = -1.0
+            elif lower_name.startswith("r_"):
+                lateral_sign = 1.0
+            else:
+                lateral_sign = 0.0
+
+            origin = (
+                parent_origin[0] + lateral_sign * lateral_distance,
+                parent_origin[1],
+                parent_origin[2] + float(bone.local_position[0]),
+            )
+        else:
+            parent_origin = resolve_origin(bone.parent_index, active)
+            parent_offset = transform_by_basis(
+                bases[bone.parent_index],
+                bone.local_position,
+            )
+            origin = tuple(
+                parent_origin[axis] + parent_offset[axis]
+                for axis in range(3)
+            )
+
+        active.remove(bone_index)
+        origins[bone_index] = origin
+        return origin
+
+    for bone_index in range(len(bones)):
+        resolve_origin(bone_index, set())
+
+    return [origin or (0.0, 0.0, 0.0) for origin in origins], bases
+
+
+def build_import_faces(
+    model: TOMModel,
+    face_source: str,
+) -> List[Tuple[int, int, int]]:
+    if face_source == "SCRATCH_STREAM":
+        return list(model.faces)
+
+    if face_source == "PACKET_TABLE":
+        return [
+            (
+                packet.packet_vertex_a,
+                packet.packet_vertex_b,
+                packet.packet_vertex_c,
+            )
+            for packet in model.packets
+        ]
+
+    raise ValueError(f"Unsupported face source: {face_source}")
+
+
+def model_has_humanoid_bone_roles(
+    bones: Sequence[TOMBone],
+) -> bool:
+    names = [bone.name.lower() for bone in bones]
+    has_body = any(
+        "torso" in name or "pelvis" in name
+        for name in names
+    )
+    has_head = any(
+        "head" in name or "neck" in name
+        for name in names
+    )
+    has_limb = any(
+        token in name
+        for name in names
+        for token in ("uarm", "larm", "uleg", "lleg", "hand", "foot")
+    )
+    return has_body and has_head and has_limb
+
+
 def build_import_vertices(
     model: TOMModel,
     vertex_space: str,
     axis_mode: str,
     scale: float,
 ) -> List[Tuple[float, float, float]]:
+    if vertex_space == "AUTO_RECONSTRUCT":
+        if model_has_humanoid_bone_roles(model.bones):
+            effective_vertex_space = "HUMANOID_BIND_GUESS"
+        else:
+            effective_vertex_space = "SOURCE_LOCAL"
+    else:
+        effective_vertex_space = vertex_space
+
     bone_positions = build_translation_world_positions(model.bones)
+    bind_origins: List[Tuple[float, float, float]] = []
+    bind_bases: List[Tuple[Tuple[float, float, float], ...]] = []
+
+    if effective_vertex_space == "HUMANOID_BIND_GUESS":
+        bind_origins, bind_bases = build_humanoid_bind_pose(model.bones)
     result: List[Tuple[float, float, float]] = []
 
     for vertex in model.vertices:
@@ -1071,13 +1297,26 @@ def build_import_vertices(
         z = float(vertex.z)
 
         if (
-            vertex_space == "TRANSLATION_HIERARCHY"
+            effective_vertex_space == "TRANSLATION_HIERARCHY"
             and vertex.owner_bone_index >= 0
         ):
             bone_position = bone_positions[vertex.owner_bone_index]
             x += bone_position[0]
             y += bone_position[1]
             z += bone_position[2]
+        elif (
+            effective_vertex_space == "HUMANOID_BIND_GUESS"
+            and vertex.owner_bone_index >= 0
+        ):
+            bone_index = vertex.owner_bone_index
+            transformed = transform_by_basis(
+                bind_bases[bone_index],
+                (x, y, z),
+            )
+            origin = bind_origins[bone_index]
+            x = origin[0] + transformed[0]
+            y = origin[1] + transformed[1]
+            z = origin[2] + transformed[2]
 
         result.append(
             transform_coordinate(
@@ -1272,6 +1511,7 @@ def create_debug_armature(
     context,
     collection,
     model: TOMModel,
+    vertex_space: str,
     axis_mode: str,
     scale: float,
 ):
@@ -1289,9 +1529,16 @@ def create_debug_armature(
 
     bpy.ops.object.mode_set(mode="EDIT")
 
-    world_positions = build_translation_world_positions(
-        model.bones,
-    )
+    if vertex_space == "AUTO_RECONSTRUCT":
+        use_reconstructed_pose = model_has_humanoid_bone_roles(model.bones)
+    else:
+        use_reconstructed_pose = vertex_space == "HUMANOID_BIND_GUESS"
+
+    if use_reconstructed_pose:
+        world_positions, world_bases = build_humanoid_bind_pose(model.bones)
+    else:
+        world_positions = build_translation_world_positions(model.bones)
+        world_bases = []
     edit_bones = []
 
     for bone in model.bones:
@@ -1310,6 +1557,23 @@ def create_debug_armature(
 
     for bone in model.bones:
         edit_bone = edit_bones[bone.index]
+
+        if use_reconstructed_pose:
+            tail_direction = transform_by_basis(
+                world_bases[bone.index],
+                (1.0, 0.0, 0.0),
+            )
+            transformed_tail_direction = transform_coordinate(
+                tail_direction,
+                axis_mode=axis_mode,
+                scale=minimum_tail_length,
+            )
+            edit_bone.tail = (
+                edit_bone.head
+                + Vector(transformed_tail_direction)
+            )
+            continue
+
         child_indices = [
             child.index
             for child in model.bones
@@ -1359,6 +1623,7 @@ def import_tom_into_blender(
     context,
     path: Path,
     vertex_space: str,
+    face_source: str,
     axis_mode: str,
     scale: float,
     reverse_winding: bool,
@@ -1379,13 +1644,18 @@ def import_tom_into_blender(
         scale=scale,
     )
 
+    source_faces = build_import_faces(
+        model=model,
+        face_source=face_source,
+    )
+
     if reverse_winding:
         imported_faces = [
             (face[0], face[2], face[1])
-            for face in model.faces
+            for face in source_faces
         ]
     else:
-        imported_faces = model.faces
+        imported_faces = source_faces
 
     mesh = bpy.data.meshes.new(
         f"{model.path.stem}_TOM_Mesh",
@@ -1429,6 +1699,7 @@ def import_tom_into_blender(
     )
     mesh_object["tom_processing_order"] = model.processing_order
     mesh_object["tom_vertex_space"] = vertex_space
+    mesh_object["tom_face_source"] = face_source
     mesh_object["tom_axis_mode"] = axis_mode
     mesh_object["tom_warnings"] = json.dumps(model.warnings)
 
@@ -1439,6 +1710,7 @@ def import_tom_into_blender(
             context=context,
             collection=collection,
             model=model,
+            vertex_space=vertex_space,
             axis_mode=axis_mode,
             scale=scale,
         )
@@ -1488,6 +1760,11 @@ if bpy is not None:
             ),
             items=(
                 (
+                    "AUTO_RECONSTRUCT",
+                    "Automatic Reconstruction",
+                    "Reconstruct recognized segmented character skeletons and preserve source-local coordinates for unknown layouts",
+                ),
+                (
                     "SOURCE_LOCAL",
                     "Source Local",
                     "Import exact stored rigid-part coordinates",
@@ -1497,8 +1774,34 @@ if bpy is not None:
                     "Translation Hierarchy",
                     "Add accumulated bone translations; rotations remain unresolved",
                 ),
+                (
+                    "HUMANOID_BIND_GUESS",
+                    "Humanoid Bind Reconstruction",
+                    "Use the decoded hierarchy and generic bone-name roles to separate humanoid rigid sections",
+                ),
             ),
-            default="SOURCE_LOCAL",
+            default="AUTO_RECONSTRUCT",
+        )
+
+        face_source: EnumProperty(
+            name="Face Source",
+            description=(
+                "Packet Table reproduces the original complete triangle list. "
+                "Scratch Stream exposes the separately decoded runtime scratch references"
+            ),
+            items=(
+                (
+                    "PACKET_TABLE",
+                    "Legacy Packet Fields (Experimental)",
+                    "Interpret the three unresolved 16-bit packet fields as direct vertex indices for comparison only",
+                ),
+                (
+                    "SCRATCH_STREAM",
+                    "Scratch Stream",
+                    "Use triangles reconstructed through the runtime scratch-slot stream",
+                ),
+            ),
+            default="SCRATCH_STREAM",
         )
 
         axis_mode: EnumProperty(
@@ -1551,8 +1854,8 @@ if bpy is not None:
         create_armature: BoolProperty(
             name="Create Debug Armature",
             description=(
-                "Create the decoded child/sibling hierarchy using translation-only "
-                "rest positions"
+                "Create the decoded child/sibling hierarchy using the selected "
+                "mesh reconstruction basis"
             ),
             default=True,
         )
@@ -1580,6 +1883,7 @@ if bpy is not None:
                             context=context,
                             path=path,
                             vertex_space=self.vertex_space,
+                            face_source=self.face_source,
                             axis_mode=self.axis_mode,
                             scale=self.scale,
                             reverse_winding=self.reverse_winding,
